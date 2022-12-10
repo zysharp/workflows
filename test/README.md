@@ -1,7 +1,7 @@
-# ZySharp Template
+# ZySharp Workflows
 
 To be replaced by a meaningful description.
 
 ## License
 
-ZySharp Template is licensed under the MIT license.
+ZySharp Workflows is licensed under the MIT license.
