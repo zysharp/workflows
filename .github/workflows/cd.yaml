@@ -2,12 +2,21 @@ name: CD
 
 on: 
   workflow_call:
+    inputs:
+      path:
+        description: The path where to look for a Visual Studio Solution file (without a trailing slash).
+        type: string
+        required: false
+        default: ''
     secrets:
       NUGET_API_KEY:
         required: true
 
 env:
   BUILD_CONFIG: Release
+  DOTNET_GLOBAL_JSON: ${{ inputs.path != '' && format('{0}/global.json', inputs.path) || 'global.json' }}
+  RESTORE_PATTERN: ${{ inputs.path != '' && format('{0}/**/packages.lock.json', inputs.path) || '**/packages.lock.json' }}
+  ARTIFACTS_PATH: ${{ inputs.path != '' && format('{0}/nupkg', inputs.path) || 'nupkg' }}
 
 jobs:
   release:
@@ -15,21 +24,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3.1.0
+        uses: actions/checkout@v3
         with:
           # Required by NBGV
           fetch-depth: 0
 
       - name: .NET Setup
-        uses: flobernd/actions/dotnet/setup@master
+        uses: zyactions/dotnet-setup@v1
         with:
-          # Use version defined in 'global.json'
-          dotnet-version: ''
-          disable-problem-matcher: true
+          global-json-file: ${{ env.DOTNET_GLOBAL_JSON }}
+          problem-matcher: false
 
       - name: Detect Version
-        uses: dotnet/nbgv@master
         id: nbgv
+        uses: dotnet/nbgv@master
+        with:
+          path: ${{ inputs.path }}
 
       - name: Create Release
         uses: flobernd/actions/github/create-release@master
@@ -41,9 +51,11 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    env:
+      FILTERED_SOLUTION: ${{ inputs.path != '' && format('{0}/Packages.slnf', inputs.path) || 'Packages.slnf' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3.1.0
+        uses: actions/checkout@v3
         with:
           # Required by NBGV
           fetch-depth: 0
@@ -51,42 +63,51 @@ jobs:
       - name: Find Solution
         id: find
         uses: flobernd/actions/dotnet/find-solution@master
+        with:
+          directory: ${{ inputs.path }}
 
       - uses: flobernd/actions/dotnet/filter-solution@master
         name: Filter Solution
         with:
           solution: ${{ steps.find.outputs.solution }}
+          # This pattern is relative to the solution file and does not need to be prefixed with
+          # the 'directory' input value
           pattern: |
             **/*.csproj
             !**/*.Test*.csproj
             !**/*.Examples*.csproj
-          output: ./Packages.slnf
+          output: ${{ env.FILTERED_SOLUTION }}
 
       - name: .NET Setup
-        uses: flobernd/actions/dotnet/setup@master
+        uses: zyactions/dotnet-setup@v1
         with:
-          # Use version defined in 'global.json'
-          dotnet-version: ''
-          disable-problem-matcher: false
+          global-json-file: ${{ env.DOTNET_GLOBAL_JSON }}
+          problem-matcher: true
+
+      - name: .NET Cache Packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles(env.RESTORE_PATTERN) }}
+          restore-keys: ${{ runner.os }}-nuget-
 
       - name: .NET Restore
-        uses: flobernd/actions/dotnet/restore@master
+        uses: zactions/dotnet-restore@v1
         with:
-          workspace: ./Packages.slnf
-          cache-key: ${{ hashFiles('**/packages.lock.json') }}
+          workspace: ${{ env.FILTERED_SOLUTION }}
 
       - name: .NET Pack
         uses: flobernd/actions/dotnet/pack@master
         with:
-          workspace: ./Packages.slnf
+          workspace: ${{ env.FILTERED_SOLUTION }}
           configuration: ${{ env.BUILD_CONFIG }}
-          output: ./nupkg
+          output: ${{ env.ARTIFACTS_PATH }}
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3.1.1
+        uses: actions/upload-artifact@v3
         with:
           name: packages
-          path: ./nupkg
+          path: ${{ env.ARTIFACTS_PATH }}
 
   publish:
     name: Publish to ${{ matrix.feed.name }}
@@ -100,21 +121,20 @@ jobs:
     needs: build
     steps:
       - name: .NET Setup
-        uses: flobernd/actions/dotnet/setup@master
+        uses: zyactions/dotnet-setup@v1
         with:
-          # Use version defined in 'global.json'
-          dotnet-version: ''
-          disable-problem-matcher: true
+          global-json-file: ${{ env.DOTNET_GLOBAL_JSON }}
+          problem-matcher: false
 
       - name: Download Packages
-        uses: actions/download-artifact@v3.0.1
+        uses: actions/download-artifact@v3
         with:
           name: packages
-          path: ./nupkg
+          path: ${{ env.ARTIFACTS_PATH }}
 
       - name: .NET NuGet Push
         uses: flobernd/actions/dotnet/nuget-push@master
         with:
-          packages: ./nupkg/*.nupkg
+          packages: ${{ format('{0}/*.nupkg', env.ARTIFACTS_PATH) }}
           nuget-source: ${{ matrix.feed.source }}
           nuget-api-key: ${{ secrets[matrix.feed.key] }}
